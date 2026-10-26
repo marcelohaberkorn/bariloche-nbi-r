@@ -39,8 +39,7 @@ vignettes/*.pdf
 # R Environment Variables
 .Renviron
 
-# pkgdown site
-docs/
+# Sitio web del proyecto publicado con GitHub Pages
 
 # translation temp files
 po/*~
