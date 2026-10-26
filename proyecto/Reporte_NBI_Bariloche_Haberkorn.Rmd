@@ -1,0 +1,1268 @@
+---
+title: "Análisis exploratorio y espacial de las Necesidades Básicas Insatisfechas en San Carlos de Bariloche"
+subtitle: "Aportes de la Ciencia de Datos al Análisis Espacial y la Geografía"
+author: "Marcelo Haberkorn"
+date: "09/10/2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: cosmo
+    code_folding: show
+    self_contained: true
+bibliography: references.bib
+link-citations: true
+lang: es
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 9,
+  fig.height = 5.5
+)
+
+options(scipen = 999)
+options(knitr.kable.NA = "")
+
+library(sf)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(leaflet)
+library(leaflet.minicharts)
+library(knitr)
+
+fmt_num <- function(x, dec = 0) {
+  format(
+    round(x, dec),
+    big.mark = ".",
+    decimal.mark = ",",
+    nsmall = dec,
+    trim = TRUE,
+    scientific = FALSE
+  )
+}
+
+# Función auxiliar para media ponderada segura
+media_pond <- function(x, w) {
+  if (sum(w, na.rm = TRUE) == 0) return(NA_real_)
+  weighted.mean(x, w = w, na.rm = TRUE)
+}
+```
+
+# Introducción
+
+El análisis de datos geoespaciales permite combinar atributos estadísticos y geometrías para estudiar cómo se distribuyen territorialmente los fenómenos sociales. En este reporte se analiza la distribución de las **Necesidades Básicas Insatisfechas (NBI)** en San Carlos de Bariloche, provincia de Río Negro, a partir de radios censales y de dos capas territoriales complementarias: el límite municipal y los barrios de la ciudad.
+
+El indicador de NBI constituye una aproximación multidimensional a situaciones de privación de los hogares y posee una extensa trayectoria de uso en Argentina [@arakaki2016nbi; @arakaki2018pobreza; @manzano2023nbi]. En San Carlos de Bariloche, distintas investigaciones han señalado una marcada heterogeneidad socioespacial y procesos de diferenciación residencial, por lo que el análisis a escala intraurbana resulta especialmente pertinente [@matossian2015bariloche; @niembro2019bariloche].
+
+Esta **versión 2.0** amplía el reporte exploratorio inicial mediante cuatro componentes: análisis univariado, análisis bivariado mediante correlaciones, operaciones geométricas con `sf` y transferencia estimativa de información desde radios censales hacia barrios mediante **interpolación areal ponderada por superficie**. El objetivo no es transformar los barrios en nuevas unidades censales, sino construir una estimación exploratoria que permita comparar ambas zonificaciones, explicitando sus supuestos y limitaciones. Los resultados agregados deben interpretarse con cautela debido a los efectos de la unidad espacial y al problema de la unidad areal modificable [@openshaw1984maup; @robinson1950ecological].
+
+
+# Fuente de datos
+
+Se utilizan **tres datasets vectoriales**:
+
+1. **Radios censales de San Carlos de Bariloche**, con datos de población, hogares, viviendas y NBI.
+2. **Límite del municipio de San Carlos de Bariloche**, correspondiente a la capa de gobiernos locales del Instituto Geográfico Nacional.
+3. **Barrios de San Carlos de Bariloche**, utilizados como zonificación de destino para la interpolación areal.
+
+## URLs y procedencia
+
+- **Radios censales y datos censales**  
+  Dirección de Estadística y Censos de Río Negro:  
+  <https://estadisticaycensos.rionegro.gov.ar/?contID=75688>  
+  INDEC - Bases de datos censales:  
+  <https://www.indec.gob.ar/indec/web/Institucional-Indec-BasesDeDatos-6>
+
+- **Límite municipal**  
+  Instituto Geográfico Nacional - Capas SIG:  
+  <https://www.ign.gob.ar/NuestrasActividades/InformacionGeoespacial/CapasSIG>  
+  Metadatos de la capa de municipios/gobiernos locales:  
+  <https://www.ign.gob.ar/archivos/sig250/metadatos/municipio.pdf>
+
+- **Barrios de San Carlos de Bariloche**  
+  El archivo `Barrios_Bariloche.geojson` fue brindado por el **Municipio de San Carlos de Bariloche** originalmente en formato KML y, según el informante, corresponde al año **2023**. En el archivo recibido no se incluye la URL de descarga original ni metadatos más detallados, por lo que esa referencia institucional se consigna tal como fue informada.
+
+El archivo del límite municipal sí incluye en su tabla de atributos `sag = "IGN"` y `fdc = "A.R.T - Gerencia de Catastro"`.
+
+## Paquetes utilizados
+
+```{r instalar-paquetes, eval=FALSE}
+install.packages(c(
+  "sf", "dplyr", "tidyr", "ggplot2",
+  "leaflet", "leaflet.minicharts", "knitr"
+))
+```
+
+Para la representación gráfica se utiliza `ggplot2`, cuya lógica se basa en la *Grammar of Graphics*: datos, estéticas, geometrías, escalas, coordenadas, transformaciones y temas se combinan en capas para construir la visualización [@wilkinson2005grammar; @wickham2016ggplot2].
+
+# Descripción de los datasets y sus atributos
+
+## Lectura de los tres GeoJSON
+
+```{r lectura-datos}
+archivo_radios <- "Radios_censales_Bariloche.geojson"
+archivo_limite <- "Limite municipio Bariloche.geojson"
+archivo_barrios <- "Barrios_Bariloche.geojson"
+
+archivos <- c(archivo_radios, archivo_limite, archivo_barrios)
+
+if (!all(file.exists(archivos))) {
+  stop(
+    paste0(
+      "No se encontraron todos los GeoJSON requeridos. ",
+      "Guardar los tres archivos en la misma carpeta que este Rmd: ",
+      paste(archivos, collapse = ", ")
+    )
+  )
+}
+
+radios_original <- st_read(archivo_radios, quiet = TRUE)
+limite_original <- st_read(archivo_limite, quiet = TRUE)
+barrios_original <- st_read(archivo_barrios, quiet = TRUE)
+
+# Renombrado técnico robusto para el campo fracción/radio.
+# Según la forma en que GDAL/sf lea el GeoJSON, el nombre original
+# FRAC/RAD puede conservarse o convertirse automáticamente en FRAC.RAD.
+nombre_frac <- intersect(
+  c("FRAC/RAD", "FRAC.RAD", "FRAC_RAD"),
+  names(radios_original)
+)
+
+if (length(nombre_frac) == 1) {
+  names(radios_original)[names(radios_original) == nombre_frac] <- "FRAC_RAD"
+} else if (length(nombre_frac) == 0) {
+  stop(
+    paste0(
+      "No se encontró el campo FRAC/RAD. Campos disponibles: ",
+      paste(names(radios_original), collapse = ", ")
+    )
+  )
+}
+
+# Se conservan únicamente los atributos útiles para el análisis.
+radios_original <- radios_original %>%
+  select(
+    NOMDEPTO, CRO, TRO, SAG, VIVIENDAS, POBLACION, NBI,
+    NBI_CAP_SU, NBI_COND_S, HOGARES, NBI_ESCOLA,
+    NBI_HACINA, NBI_VIV_IN, FRAC_RAD, geometry
+  )
+
+limite_original <- limite_original %>%
+  select(gid, fna, gna, nam, in1, fdc, sag, geometry)
+
+# La capa de barrios contiene numerosos campos auxiliares heredados del
+# formato de origen. Para el análisis se conserva solamente el nombre del
+# barrio y su geometría.
+barrios_original <- barrios_original %>%
+  select(Name, geometry)
+```
+
+El conjunto de radios contiene **`r nrow(radios_original)` unidades**, el límite municipal contiene **`r nrow(limite_original)` geometría** y la capa de barrios contiene **`r nrow(barrios_original)` barrios**.
+
+## Estructura de los objetos
+
+```{r estructura-datasets}
+cat("RADIOS CENSALES\n")
+dplyr::glimpse(st_drop_geometry(radios_original))
+
+cat("\nLÍMITE MUNICIPAL\n")
+dplyr::glimpse(st_drop_geometry(limite_original))
+
+cat("\nBARRIOS\n")
+dplyr::glimpse(st_drop_geometry(barrios_original))
+```
+
+Los sistemas de referencia originales son:
+
+```{r crs-originales}
+crs_datasets <- data.frame(
+  Dataset = c("Radios censales", "Límite municipal", "Barrios"),
+  EPSG = c(
+    st_crs(radios_original)$epsg,
+    st_crs(limite_original)$epsg,
+    st_crs(barrios_original)$epsg
+  ),
+  CRS = c(
+    st_crs(radios_original)$input,
+    st_crs(limite_original)$input,
+    st_crs(barrios_original)$input
+  )
+)
+
+knitr::kable(crs_datasets, caption = "Sistemas de referencia originales")
+```
+
+Los radios y los barrios se encuentran en WGS 84, mientras que el límite municipal se encuentra originalmente en **POSGAR 2007 / Argentina 3 (EPSG:5345)**. Esta diferencia obliga a armonizar los sistemas de referencia antes de realizar operaciones espaciales.
+
+## Primeras filas de las tablas de atributos
+
+### Radios censales
+
+```{r head-radios}
+knitr::kable(
+  head(st_drop_geometry(radios_original), 6),
+  digits = 2,
+  caption = "Primeras seis filas de los radios censales"
+)
+```
+
+### Límite municipal
+
+```{r head-limite}
+knitr::kable(
+  head(st_drop_geometry(limite_original), 6),
+  caption = "Tabla de atributos del límite municipal"
+)
+```
+
+### Barrios
+
+```{r head-barrios}
+knitr::kable(
+  head(st_drop_geometry(barrios_original), 6),
+  caption = "Primeras seis filas de la capa de barrios"
+)
+```
+
+## Descripción de atributos
+
+### Dataset de radios censales
+
+- **`NOMDEPTO`**: nombre del departamento.
+- **`CRO`**: código compuesto del radio censal. Por ejemplo, `620210215` concatena provincia `62`, departamento `021`, fracción `02` y radio `15`.
+- **`TRO`**: tipo de radio: `1` urbano, `2` rural y `3` mixto.
+- **`SAG`**: fuente de información.
+- **`VIVIENDAS`**: cantidad de viviendas.
+- **`POBLACION`**: cantidad de personas.
+- **`NBI`**: porcentaje de hogares con al menos una Necesidad Básica Insatisfecha.
+- **`NBI_CAP_SU`**: porcentaje de hogares con NBI por capacidad de subsistencia.
+- **`NBI_COND_S`**: porcentaje de hogares con NBI por condiciones sanitarias.
+- **`HOGARES`**: cantidad de hogares.
+- **`NBI_ESCOLA`**: porcentaje de hogares con NBI por escolaridad.
+- **`NBI_HACINA`**: porcentaje de hogares con NBI por hacinamiento crítico.
+- **`NBI_VIV_IN`**: porcentaje de hogares con NBI por vivienda inconveniente.
+- **`FRAC_RAD`**: concatenación de fracción y radio.
+- **`geometry`**: geometría poligonal del radio censal.
+
+### Dataset del límite municipal
+
+- **`gid`**: identificador del objeto geográfico.
+- **`fna`**: nombre geográfico completo.
+- **`gna`**: término genérico del objeto; en este caso, municipio.
+- **`nam`**: nombre específico: San Carlos de Bariloche.
+- **`in1`**: código INDEC del gobierno local.
+- **`fdc`**: fuente de captura o dato catastral.
+- **`sag`**: autoridad de fuente; en este archivo, IGN.
+- **`geometry`**: geometría del municipio.
+
+### Dataset de barrios
+
+Antes del análisis se eliminaron los campos auxiliares heredados del formato de origen y se conservó únicamente la información sustantiva del dataset:
+
+- **`Name`**: nombre del barrio.
+- **`geometry`**: geometría poligonal del barrio.
+
+Esta depuración evita incorporar al análisis atributos sin contenido analítico ni utilidad estadística.
+
+## Escalas de medición
+
+La escala de medición condiciona las operaciones estadísticas conceptualmente válidas. Que un campo esté almacenado como número no implica necesariamente una magnitud; un código numérico puede ser simplemente nominal [@stevens1946scales].
+
+```{r escalas-medicion}
+escalas <- data.frame(
+  Dataset = c(
+    rep("Radios", 14),
+    rep("Límite municipal", 7),
+    rep("Barrios", 1)
+  ),
+  Variable = c(
+    "NOMDEPTO", "CRO", "TRO", "SAG", "VIVIENDAS", "POBLACION",
+    "NBI", "NBI_CAP_SU", "NBI_COND_S", "HOGARES", "NBI_ESCOLA",
+    "NBI_HACINA", "NBI_VIV_IN", "FRAC_RAD",
+    "gid", "fna", "gna", "nam", "in1", "fdc", "sag",
+    "Name"
+  ),
+  Naturaleza = c(
+    "Categórica", "Identificador", "Categórica codificada", "Categórica",
+    "Cuantitativa discreta", "Cuantitativa discreta",
+    rep("Cuantitativa continua", 3),
+    "Cuantitativa discreta",
+    rep("Cuantitativa continua", 3),
+    "Identificador",
+    "Identificador", rep("Categórica", 3), "Identificador", "Categórica", "Categórica",
+    "Categórica"
+  ),
+  Escala = c(
+    "Nominal", "Nominal", "Nominal", "Nominal",
+    "Razón", "Razón",
+    rep("Razón", 3),
+    "Razón",
+    rep("Razón", 3),
+    "Nominal",
+    "Nominal", rep("Nominal", 3), "Nominal", "Nominal", "Nominal",
+    "Nominal"
+  ),
+  stringsAsFactors = FALSE
+)
+
+knitr::kable(
+  escalas,
+  caption = "Clasificación conceptual de las variables por escala de medición"
+)
+```
+
+# Análisis de los datos
+
+## Análisis univariado
+
+Antes de estudiar relaciones entre variables o patrones espaciales se realiza un análisis univariado. Las medidas de tendencia central y dispersión permiten reconocer la distribución típica, la variabilidad y la presencia de valores extremos.
+
+### Transformaciones iniciales
+
+```{r transformaciones-iniciales}
+radios <- radios_original %>%
+  st_make_valid() %>%
+  st_transform(4326) %>%
+  mutate(
+    TIPO_RADIO = case_when(
+      TRO == 1 ~ "Urbano",
+      TRO == 2 ~ "Rural",
+      TRO == 3 ~ "Mixto",
+      TRUE ~ "Sin clasificar"
+    ),
+    TIPO_RADIO = factor(
+      TIPO_RADIO,
+      levels = c("Urbano", "Rural", "Mixto", "Sin clasificar")
+    ),
+    PERSONAS_HOGAR = if_else(
+      HOGARES > 0,
+      POBLACION / HOGARES,
+      NA_real_
+    ),
+    FRACCION = substr(as.character(CRO), 6, 7)
+  )
+
+vars_nbi <- c(
+  "NBI", "NBI_CAP_SU", "NBI_COND_S",
+  "NBI_ESCOLA", "NBI_HACINA", "NBI_VIV_IN"
+)
+
+etiquetas_nbi <- c(
+  NBI = "NBI total",
+  NBI_CAP_SU = "Capacidad de subsistencia",
+  NBI_COND_S = "Condiciones sanitarias",
+  NBI_ESCOLA = "Escolaridad",
+  NBI_HACINA = "Hacinamiento",
+  NBI_VIV_IN = "Vivienda inconveniente"
+)
+
+cortes_nbi <- as.numeric(
+  quantile(radios$NBI, probs = c(0, 0.25, 0.50, 0.75, 1), na.rm = TRUE)
+)
+
+radios <- radios %>%
+  mutate(
+    NBI_CATEGORIA = cut(
+      NBI,
+      breaks = c(-Inf, cortes_nbi[2], cortes_nbi[3], cortes_nbi[4], Inf),
+      labels = c("Bajo", "Medio", "Alto", "Muy alto"),
+      include.lowest = TRUE,
+      ordered_result = TRUE
+    )
+  )
+```
+
+### Medidas de centralización y dispersión
+
+```{r resumen-univariado}
+variables_resumen <- c(
+  "POBLACION", "HOGARES", "VIVIENDAS",
+  "PERSONAS_HOGAR", vars_nbi
+)
+
+datos_resumen <- radios %>%
+  st_drop_geometry() %>%
+  select(all_of(variables_resumen))
+
+resumen_univariado <- data.frame(
+  Variable = variables_resumen,
+  Media = sapply(datos_resumen, mean, na.rm = TRUE),
+  Mediana = sapply(datos_resumen, median, na.rm = TRUE),
+  Q1 = sapply(datos_resumen, quantile, probs = 0.25, na.rm = TRUE),
+  Q3 = sapply(datos_resumen, quantile, probs = 0.75, na.rm = TRUE),
+  IQR = sapply(datos_resumen, IQR, na.rm = TRUE),
+  Desvio = sapply(datos_resumen, sd, na.rm = TRUE),
+  Minimo = sapply(datos_resumen, min, na.rm = TRUE),
+  Maximo = sapply(datos_resumen, max, na.rm = TRUE)
+) %>%
+  mutate(
+    CV_porcentaje = if_else(
+      Media != 0,
+      100 * Desvio / Media,
+      NA_real_
+    )
+  )
+
+knitr::kable(
+  resumen_univariado,
+  digits = 2,
+  caption = "Medidas de tendencia central y dispersión"
+)
+```
+
+En los `r nrow(radios)` radios se contabilizan **`r fmt_num(sum(radios$POBLACION, na.rm = TRUE))` personas**, **`r fmt_num(sum(radios$HOGARES, na.rm = TRUE))` hogares** y **`r fmt_num(sum(radios$VIVIENDAS, na.rm = TRUE))` viviendas**. El NBI medio entre radios es de **`r fmt_num(mean(radios$NBI, na.rm = TRUE), 2)` %**, mientras que la mediana es de **`r fmt_num(median(radios$NBI, na.rm = TRUE), 2)` %**.
+
+Como los radios poseen distinta cantidad de hogares, la media simple del NBI describe al **radio promedio**, no al hogar promedio. Por ese motivo también se calcula una media ponderada por hogares:
+
+```{r nbi-ponderado}
+nbi_ponderado <- weighted.mean(
+  radios$NBI,
+  w = radios$HOGARES,
+  na.rm = TRUE
+)
+
+nbi_ponderado
+```
+
+La media ponderada es de **`r fmt_num(nbi_ponderado, 2)` %**. Debe interpretarse como una aproximación porque los porcentajes originales ya se encuentran redondeados.
+
+### Resumen agrupado por tipo de radio
+
+Este resumen utiliza explícitamente `group_by()` y `summarise()` para comparar la estructura de los radios urbanos, rurales y mixtos.
+
+```{r resumen-tipo-radio}
+resumen_tipo_radio <- radios %>%
+  st_drop_geometry() %>%
+  group_by(TIPO_RADIO) %>%
+  summarise(
+    RADIOS = n(),
+    # Las medias ponderadas se calculan antes de resumir HOGARES.
+    # En dplyr, las variables creadas dentro de summarise() pueden
+    # ocultar a las columnas originales en las expresiones posteriores.
+    NBI_MEDIO = mean(NBI, na.rm = TRUE),
+    NBI_PONDERADO = media_pond(NBI, HOGARES),
+    PERSONAS_HOGAR = media_pond(PERSONAS_HOGAR, HOGARES),
+    POBLACION = sum(POBLACION, na.rm = TRUE),
+    HOGARES = sum(HOGARES, na.rm = TRUE),
+    VIVIENDAS = sum(VIVIENDAS, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+knitr::kable(
+  resumen_tipo_radio,
+  digits = 2,
+  caption = "Resumen por tipo de radio censal"
+)
+```
+
+### Histograma del NBI total
+
+La visualización se construye con la gramática de gráficos: el conjunto de datos se declara en `ggplot()`, la variable cuantitativa se vincula a la estética `x`, `geom_histogram()` define la geometría y las escalas y el tema completan la representación [@wilkinson2005grammar; @wickham2016ggplot2].
+
+```{r histograma-nbi}
+ggplot(st_drop_geometry(radios), aes(x = NBI)) +
+  geom_histogram(
+    binwidth = 2,
+    boundary = 0,
+    color = "white",
+    linewidth = 0.25
+  ) +
+  geom_vline(
+    xintercept = mean(radios$NBI, na.rm = TRUE),
+    linetype = "dashed",
+    linewidth = 0.8
+  ) +
+  labs(
+    title = "Distribución del porcentaje de hogares con NBI",
+    subtitle = "La línea discontinua representa la media de los radios",
+    x = "Hogares con NBI (%)",
+    y = "Cantidad de radios"
+  ) +
+  theme_minimal()
+```
+
+La diferencia entre media y mediana permite evaluar asimetrías y complementa la lectura visual de la distribución. Los radios ubicados en la cola superior requieren una interpretación territorial específica y no deben quedar ocultos por un único promedio.
+
+### Boxplot del NBI total y sus dimensiones
+
+```{r boxplot-nbi}
+datos_nbi_largo <- radios %>%
+  st_drop_geometry() %>%
+  select(all_of(vars_nbi)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Porcentaje"
+  ) %>%
+  mutate(
+    Dimension = recode(Variable, !!!etiquetas_nbi)
+  )
+
+ggplot(datos_nbi_largo, aes(x = Dimension, y = Porcentaje)) +
+  geom_boxplot(outlier.alpha = 0.55) +
+  coord_flip() +
+  labs(
+    title = "Distribución del NBI total y sus dimensiones",
+    x = NULL,
+    y = "Hogares (%)"
+  ) +
+  theme_minimal()
+```
+
+El boxplot permite comparar simultáneamente mediana, rango intercuartílico y valores extremos. Las dimensiones no son mutuamente excluyentes: un hogar puede presentar más de una carencia.
+
+## Análisis bivariado
+
+El análisis bivariado busca identificar asociaciones entre variables cuantitativas. Se utiliza el coeficiente de correlación lineal de Pearson como herramienta exploratoria. Una correlación elevada no demuestra causalidad y debe interpretarse en función de la construcción conceptual de los indicadores.
+
+### Matriz de correlación
+
+```{r matriz-correlacion}
+variables_cor <- c(
+  "POBLACION", "HOGARES", "VIVIENDAS", "PERSONAS_HOGAR",
+  "NBI", "NBI_CAP_SU", "NBI_COND_S",
+  "NBI_ESCOLA", "NBI_HACINA", "NBI_VIV_IN"
+)
+
+datos_cor <- radios %>%
+  st_drop_geometry() %>%
+  select(all_of(variables_cor))
+
+matriz_cor <- cor(
+  datos_cor,
+  use = "pairwise.complete.obs",
+  method = "pearson"
+)
+
+knitr::kable(
+  round(matriz_cor, 2),
+  caption = "Matriz de correlación de Pearson"
+)
+```
+
+### Visualización de la matriz
+
+```{r grafico-matriz-correlacion}
+cor_larga <- as.data.frame(as.table(matriz_cor)) %>%
+  rename(
+    Variable_1 = Var1,
+    Variable_2 = Var2,
+    Correlacion = Freq
+  )
+
+ggplot(cor_larga, aes(x = Variable_1, y = Variable_2, fill = Correlacion)) +
+  geom_tile(color = "white", linewidth = 0.25) +
+  geom_text(
+    aes(label = sprintf("%.2f", Correlacion)),
+    size = 2.6
+  ) +
+  scale_fill_gradient2(
+    low = "#2166AC",
+    mid = "white",
+    high = "#B2182B",
+    midpoint = 0,
+    limits = c(-1, 1)
+  ) +
+  coord_equal() +
+  labs(
+    title = "Matriz de correlación entre variables cuantitativas",
+    x = NULL,
+    y = NULL,
+    fill = "r"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+Las cantidades de población, hogares y viviendas presentan asociaciones fuertes entre sí porque describen el tamaño de los radios. Más interesante para el análisis social es la relación entre **personas por hogar** y **NBI por hacinamiento**, cuya correlación es **`r fmt_num(cor(radios$PERSONAS_HOGAR, radios$NBI_HACINA, use = "complete.obs"), 2)`**.
+
+También existe una asociación entre el NBI total y algunas de sus dimensiones específicas. Sin embargo, esas correlaciones deben interpretarse con especial cautela porque existe una relación de tipo **parte-todo**: las dimensiones contribuyen conceptualmente a la construcción del indicador general.
+
+### Relación entre personas por hogar y hacinamiento
+
+```{r dispersion-hacinamiento}
+r_hacinamiento <- cor(
+  radios$PERSONAS_HOGAR,
+  radios$NBI_HACINA,
+  use = "complete.obs",
+  method = "pearson"
+)
+
+ggplot(
+  st_drop_geometry(radios),
+  aes(x = PERSONAS_HOGAR, y = NBI_HACINA)
+) +
+  geom_point(alpha = 0.65) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    linewidth = 0.8
+  ) +
+  labs(
+    title = "Relación entre personas por hogar y hacinamiento crítico",
+    subtitle = paste0("Correlación de Pearson: r = ", round(r_hacinamiento, 2)),
+    x = "Personas por hogar",
+    y = "Hogares con NBI por hacinamiento (%)"
+  ) +
+  theme_minimal()
+```
+
+Una correlación positiva indica que los radios con mayor cantidad media de personas por hogar tienden a presentar mayores porcentajes de hacinamiento crítico. La nube de puntos permite observar la dispersión y evita interpretar el coeficiente como una relación determinista.
+
+## Análisis espacial
+
+### Transformaciones de los datos
+
+Además de `mutate()`, el análisis utiliza `group_by()`, `summarise()`, `case_when()`, `pivot_longer()` y operaciones de unión tabular. El objetivo es construir variables interpretables y resúmenes a distintas escalas.
+
+```{r transformaciones-fraccion}
+resumen_fraccion <- radios %>%
+  st_drop_geometry() %>%
+  group_by(FRACCION) %>%
+  summarise(
+    RADIOS = n(),
+    # Primero se calculan los promedios ponderados usando la columna
+    # HOGARES original de cada radio; después se generan los totales.
+    NBI_PONDERADO = media_pond(NBI, HOGARES),
+    HACINAMIENTO_PONDERADO = media_pond(NBI_HACINA, HOGARES),
+    POBLACION = sum(POBLACION, na.rm = TRUE),
+    HOGARES = sum(HOGARES, na.rm = TRUE),
+    VIVIENDAS = sum(VIVIENDAS, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(POBLACION))
+
+knitr::kable(
+  resumen_fraccion,
+  digits = 2,
+  caption = "Resumen de radios agrupados por fracción censal"
+)
+```
+
+El agrupamiento por fracción no reemplaza el análisis por radio, pero permite comprobar cómo cambia la lectura al modificar la unidad territorial, cuestión central en el problema de las unidades areales [@openshaw1984maup].
+
+### Operaciones geométricas con `sf`
+
+Las operaciones geométricas se realizan en **EPSG:5345 - POSGAR 2007 / Argentina 3**, un sistema proyectado en metros adecuado para las mediciones de área de Bariloche. Las capas se validan y transforman antes de intersectarse [@pebesma2018sf; @lovelace2019geocomputation].
+
+```{r preparar-geometrias}
+epsg_metricas <- 5345
+
+radios_proj <- radios %>%
+  st_make_valid() %>%
+  st_transform(epsg_metricas) %>%
+  mutate(
+    AREA_RADIO_M2 = as.numeric(st_area(geometry)),
+    AREA_RADIO_KM2 = AREA_RADIO_M2 / 1e6
+  )
+
+limite_proj <- limite_original %>%
+  st_make_valid() %>%
+  st_transform(epsg_metricas)
+
+barrios_proj <- barrios_original %>%
+  st_make_valid() %>%
+  st_transform(epsg_metricas)
+
+# Se recortan los barrios al límite municipal.
+# Luego se vuelven a unir fragmentos que pudieran haberse generado
+# para conservar una unidad por nombre de barrio.
+barrios_recortados <- st_intersection(
+  barrios_proj %>% select(Name),
+  limite_proj %>% select(gid)
+) %>%
+  group_by(Name) %>%
+  summarise(do_union = TRUE, .groups = "drop") %>%
+  mutate(
+    AREA_BARRIO_M2 = as.numeric(st_area(geometry)),
+    AREA_BARRIO_KM2 = AREA_BARRIO_M2 / 1e6
+  )
+```
+
+Las operaciones anteriores involucran:
+
+- `st_make_valid()`: control y corrección de geometrías.
+- `st_transform()`: transformación de CRS.
+- `st_intersection()`: recorte de los barrios con el límite municipal.
+- `st_area()`: cálculo de superficies.
+- `summarise()` sobre un objeto `sf`: unión de fragmentos por barrio.
+
+### Control geométrico y cobertura
+
+```{r control-geometrias}
+control_geo <- data.frame(
+  Dataset = c("Radios", "Límite municipal", "Barrios recortados"),
+  Unidades = c(
+    nrow(radios_proj),
+    nrow(limite_proj),
+    nrow(barrios_recortados)
+  ),
+  Invalidas = c(
+    sum(!st_is_valid(radios_proj)),
+    sum(!st_is_valid(limite_proj)),
+    sum(!st_is_valid(barrios_recortados))
+  ),
+  Superficie_km2 = c(
+    sum(radios_proj$AREA_RADIO_KM2),
+    sum(as.numeric(st_area(limite_proj))) / 1e6,
+    sum(barrios_recortados$AREA_BARRIO_KM2)
+  )
+)
+
+knitr::kable(
+  control_geo,
+  digits = 2,
+  caption = "Control geométrico de los datasets"
+)
+```
+
+La suma de superficies de los barrios no debe interpretarse automáticamente como superficie urbana efectiva: los polígonos pueden presentar pequeños solapamientos, vacíos entre unidades o diferencias de delimitación respecto del municipio.
+
+### Relación espacial entre los tres datasets
+
+```{r mapa-control-estatico}
+ggplot() +
+  geom_sf(
+    data = limite_proj,
+    aes(color = "Límite municipal"),
+    fill = NA,
+    linewidth = 0.8,
+    show.legend = TRUE
+  ) +
+  geom_sf(
+    data = barrios_recortados,
+    aes(color = "Barrios"),
+    fill = NA,
+    linewidth = 0.25,
+    alpha = 0.9,
+    show.legend = TRUE
+  ) +
+  geom_sf(
+    data = radios_proj,
+    aes(color = "Radios censales"),
+    fill = NA,
+    linewidth = 0.18,
+    alpha = 0.7,
+    show.legend = TRUE
+  ) +
+  scale_color_manual(
+    name = "Capas",
+    values = c(
+      "Límite municipal" = "black",
+      "Barrios" = "#2C7FB8",
+      "Radios censales" = "#D95F0E"
+    )
+  ) +
+  coord_sf(datum = NA) +
+  labs(
+    title = "Superposición de límite municipal, barrios y radios censales",
+    subtitle = "Control previo a la interpolación areal"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    panel.grid = element_blank(),
+    legend.position = c(0.18, 0.18),
+    legend.background = element_rect(fill = "white", color = "grey70"),
+    legend.title = element_text(size = 9),
+    legend.text = element_text(size = 8)
+  )
+```
+
+### Interpolación areal de radios a barrios
+
+Los radios censales y los barrios constituyen **zonificaciones distintas**. Por lo tanto, un dato censal no puede asignarse de forma exacta a un barrio cuando el límite de éste corta uno o más radios. Para construir una aproximación se aplica una **interpolación areal simple**: la información de cada radio se distribuye entre los barrios en proporción a la superficie de intersección.
+
+El supuesto central es que población, hogares y condiciones de NBI están distribuidos uniformemente dentro de cada radio. Este supuesto es fuerte y no siempre se cumple; por lo tanto, los resultados barriales son **estimaciones exploratorias** y no datos censales oficiales por barrio [@bivand2013asdar; @openshaw1984maup].
+
+```{r interseccion-radio-barrio}
+# Se seleccionan los atributos que participarán en la transferencia.
+intersecciones <- st_intersection(
+  radios_proj %>%
+    select(
+      CRO, POBLACION, HOGARES, VIVIENDAS,
+      NBI, NBI_CAP_SU, NBI_COND_S,
+      NBI_ESCOLA, NBI_HACINA, NBI_VIV_IN,
+      AREA_RADIO_M2
+    ),
+  barrios_recortados %>%
+    select(Name)
+) %>%
+  mutate(
+    AREA_INTERSECCION_M2 = as.numeric(st_area(geometry)),
+    PROP_AREA_RAW = AREA_INTERSECCION_M2 / AREA_RADIO_M2
+  )
+
+# Si pequeños solapamientos entre barrios provocan que la suma de
+# proporciones de un radio supere 1, se normaliza únicamente ese caso.
+intersecciones <- intersecciones %>%
+  group_by(CRO) %>%
+  mutate(
+    SUMA_PROP_RADIO = sum(PROP_AREA_RAW, na.rm = TRUE),
+    FACTOR_AJUSTE = if_else(
+      SUMA_PROP_RADIO > 1,
+      1 / SUMA_PROP_RADIO,
+      1
+    ),
+    PROP_AREA = PROP_AREA_RAW * FACTOR_AJUSTE
+  ) %>%
+  ungroup()
+```
+
+Para las variables absolutas se distribuyen cantidades según `PROP_AREA`. Para el NBI y sus dimensiones no se promedian porcentajes directamente: primero se estima la cantidad de hogares afectados dentro de cada fragmento y luego se reconstruye el porcentaje barrial. Este procedimiento evita otorgar el mismo peso a radios con cantidades muy distintas de hogares.
+
+```{r estimar-fragmentos}
+intersecciones <- intersecciones %>%
+  mutate(
+    POBLACION_EST = POBLACION * PROP_AREA,
+    HOGARES_EST = HOGARES * PROP_AREA,
+    VIVIENDAS_EST = VIVIENDAS * PROP_AREA,
+
+    NBI_HOG_EST = HOGARES * (NBI / 100) * PROP_AREA,
+    NBI_CAP_SU_HOG_EST = HOGARES * (NBI_CAP_SU / 100) * PROP_AREA,
+    NBI_COND_S_HOG_EST = HOGARES * (NBI_COND_S / 100) * PROP_AREA,
+    NBI_ESCOLA_HOG_EST = HOGARES * (NBI_ESCOLA / 100) * PROP_AREA,
+    NBI_HACINA_HOG_EST = HOGARES * (NBI_HACINA / 100) * PROP_AREA,
+    NBI_VIV_IN_HOG_EST = HOGARES * (NBI_VIV_IN / 100) * PROP_AREA
+  )
+```
+
+### Agregación estimada por barrio
+
+```{r resumen-barrios}
+resumen_barrios <- intersecciones %>%
+  st_drop_geometry() %>%
+  group_by(Name) %>%
+  summarise(
+    POBLACION_EST = sum(POBLACION_EST, na.rm = TRUE),
+    HOGARES_EST = sum(HOGARES_EST, na.rm = TRUE),
+    VIVIENDAS_EST = sum(VIVIENDAS_EST, na.rm = TRUE),
+
+    NBI_HOG_EST = sum(NBI_HOG_EST, na.rm = TRUE),
+    NBI_CAP_SU_HOG_EST = sum(NBI_CAP_SU_HOG_EST, na.rm = TRUE),
+    NBI_COND_S_HOG_EST = sum(NBI_COND_S_HOG_EST, na.rm = TRUE),
+    NBI_ESCOLA_HOG_EST = sum(NBI_ESCOLA_HOG_EST, na.rm = TRUE),
+    NBI_HACINA_HOG_EST = sum(NBI_HACINA_HOG_EST, na.rm = TRUE),
+    NBI_VIV_IN_HOG_EST = sum(NBI_VIV_IN_HOG_EST, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    NBI_EST = if_else(
+      HOGARES_EST > 0,
+      100 * NBI_HOG_EST / HOGARES_EST,
+      NA_real_
+    ),
+    NBI_CAP_SU_EST = if_else(
+      HOGARES_EST > 0,
+      100 * NBI_CAP_SU_HOG_EST / HOGARES_EST,
+      NA_real_
+    ),
+    NBI_COND_S_EST = if_else(
+      HOGARES_EST > 0,
+      100 * NBI_COND_S_HOG_EST / HOGARES_EST,
+      NA_real_
+    ),
+    NBI_ESCOLA_EST = if_else(
+      HOGARES_EST > 0,
+      100 * NBI_ESCOLA_HOG_EST / HOGARES_EST,
+      NA_real_
+    ),
+    NBI_HACINA_EST = if_else(
+      HOGARES_EST > 0,
+      100 * NBI_HACINA_HOG_EST / HOGARES_EST,
+      NA_real_
+    ),
+    NBI_VIV_IN_EST = if_else(
+      HOGARES_EST > 0,
+      100 * NBI_VIV_IN_HOG_EST / HOGARES_EST,
+      NA_real_
+    )
+  )
+
+barrios_nbi <- barrios_recortados %>%
+  select(Name, AREA_BARRIO_KM2) %>%
+  left_join(resumen_barrios, by = "Name") %>%
+  mutate(
+    DENSIDAD_POB_EST = if_else(
+      AREA_BARRIO_KM2 > 0,
+      POBLACION_EST / AREA_BARRIO_KM2,
+      NA_real_
+    )
+  )
+```
+
+La interpolación asigna aproximadamente **`r fmt_num(100 * sum(barrios_nbi$HOGARES_EST, na.rm = TRUE) / sum(radios$HOGARES, na.rm = TRUE), 1)` %** de los hogares del conjunto de radios a polígonos de barrios. La diferencia restante se explica principalmente por sectores de radios que no están cubiertos por la zonificación barrial —especialmente áreas extensas de baja ocupación— y no debe redistribuirse artificialmente entre los barrios.
+
+### Barrios con mayores valores estimados
+
+Para evitar que barrios con muy pocos hogares estimados dominen un ranking por porcentajes, se muestran solamente aquellos con al menos **100 hogares estimados**.
+
+```{r ranking-barrios}
+ranking_barrios <- barrios_nbi %>%
+  st_drop_geometry() %>%
+  filter(HOGARES_EST >= 100) %>%
+  arrange(desc(NBI_EST)) %>%
+  slice_head(n = 15) %>%
+  select(
+    Name, POBLACION_EST, HOGARES_EST,
+    NBI_EST, NBI_HACINA_EST, NBI_VIV_IN_EST
+  )
+
+knitr::kable(
+  ranking_barrios,
+  digits = 2,
+  caption = "Barrios con mayor NBI estimado entre aquellos con al menos 100 hogares estimados"
+)
+```
+
+Este ranking es una **aproximación espacial**, no una tabla censal oficial por barrio. Su valor es exploratorio: permite identificar áreas para una inspección territorial posterior y comparar patrones con conocimiento local.
+
+# Cartografía temática
+
+La cartografía temática debe corresponder a la naturaleza de la variable. Los porcentajes son adecuados para mapas coropléticos porque expresan valores relativos; representar cantidades absolutas mediante intensidad de relleno puede producir lecturas erróneas cuando las unidades poseen tamaños distintos [@slocum2022thematic; @brewer2002choropleth].
+
+Desde la perspectiva de Bertin, una variable cuantitativa ordenada requiere una variable visual con capacidad de expresar orden. En las coropletas se utiliza principalmente la **variación de valor/luminosidad** dentro de una secuencia cromática; en el mapa de Minicharts se reserva el **matiz** para diferenciar dimensiones nominales y la **porción de torta** para representar magnitud [@maceachren1995howmaps].
+
+## Preparación cartográfica y mapa base Argenmap
+
+```{r preparar-leaflet}
+radios_mapa <- radios_proj %>%
+  st_transform(4326)
+
+barrios_mapa <- barrios_nbi %>%
+  st_transform(4326)
+
+limite_mapa <- limite_proj %>%
+  st_transform(4326)
+
+bb <- st_bbox(limite_mapa)
+
+centro_lng <- mean(c(
+  as.numeric(bb[["xmin"]]),
+  as.numeric(bb[["xmax"]])
+))
+
+centro_lat <- mean(c(
+  as.numeric(bb[["ymin"]]),
+  as.numeric(bb[["ymax"]])
+))
+
+argenmap_url <- paste0(
+  "https://wms.ign.gob.ar/geoserver/gwc/service/tms/1.0.0/",
+  "capabaseargenmap@EPSG%3A3857@png/{z}/{x}/{-y}.png"
+)
+
+argenmap_attr <- paste0(
+  "Leaflet · Instituto Geográfico Nacional · OpenStreetMap"
+)
+```
+
+## Mapa coroplético 1: NBI total por radio censal
+
+Se utilizan los cuartiles de `NBI` para definir cuatro clases. Estos mismos cortes se reutilizan en el mapa barrial estimado para favorecer la comparación entre escalas.
+
+```{r mapa-nbi-radio}
+pal_nbi <- colorBin(
+  palette = "YlOrRd",
+  domain = radios_mapa$NBI,
+  bins = cortes_nbi,
+  pretty = FALSE,
+  na.color = "#BDBDBD"
+)
+
+popup_radio <- paste0(
+  "<b>Radio:</b> ", radios_mapa$CRO,
+  "<br><b>Tipo:</b> ", radios_mapa$TIPO_RADIO,
+  "<br><b>Población:</b> ", fmt_num(radios_mapa$POBLACION),
+  "<br><b>Hogares:</b> ", fmt_num(radios_mapa$HOGARES),
+  "<br><b>NBI:</b> ", fmt_num(radios_mapa$NBI, 2), "%"
+)
+
+leaflet(
+  data = radios_mapa,
+  width = "100%",
+  height = 560,
+  options = leafletOptions(preferCanvas = TRUE)
+) %>%
+  addTiles(
+    urlTemplate = argenmap_url,
+    attribution = argenmap_attr,
+    options = tileOptions(minZoom = 2, maxZoom = 18)
+  ) %>%
+  addPolygons(
+    color = "#FFFFFF",
+    weight = 0.7,
+    opacity = 1,
+    fillColor = ~pal_nbi(NBI),
+    fillOpacity = 0.80,
+    popup = popup_radio,
+    highlightOptions = highlightOptions(
+      weight = 3,
+      color = "#333333",
+      fillOpacity = 0.92,
+      bringToFront = TRUE
+    )
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = pal_nbi,
+    values = ~NBI,
+    title = "% de hogares con NBI",
+    opacity = 0.9
+  ) %>%
+  setView(
+    lng = centro_lng,
+    lat = centro_lat,
+    zoom = 10
+  )
+```
+
+## Mapa coroplético 2: NBI estimado por barrio
+
+El segundo mapa utiliza los resultados de la interpolación areal. Se mantienen los mismos puntos de corte del mapa de radios para que un mismo tono represente un intervalo equivalente en ambos mapas.
+
+```{r mapa-nbi-barrio}
+pal_nbi_barrio <- colorBin(
+  palette = "YlOrRd",
+  domain = barrios_mapa$NBI_EST,
+  bins = cortes_nbi,
+  pretty = FALSE,
+  na.color = "#BDBDBD"
+)
+
+popup_barrio <- paste0(
+  "<b>Barrio:</b> ", barrios_mapa$Name,
+  "<br><b>Población estimada:</b> ", fmt_num(barrios_mapa$POBLACION_EST),
+  "<br><b>Hogares estimados:</b> ", fmt_num(barrios_mapa$HOGARES_EST),
+  "<br><b>NBI estimado:</b> ", fmt_num(barrios_mapa$NBI_EST, 2), "%",
+  "<br><i>Estimación por interpolación areal</i>"
+)
+
+leaflet(
+  data = barrios_mapa,
+  width = "100%",
+  height = 560,
+  options = leafletOptions(preferCanvas = TRUE)
+) %>%
+  addTiles(
+    urlTemplate = argenmap_url,
+    attribution = argenmap_attr,
+    options = tileOptions(minZoom = 2, maxZoom = 18)
+  ) %>%
+  addPolygons(
+    color = "#FFFFFF",
+    weight = 0.8,
+    opacity = 1,
+    fillColor = ~pal_nbi_barrio(NBI_EST),
+    fillOpacity = 0.80,
+    popup = popup_barrio,
+    highlightOptions = highlightOptions(
+      weight = 3,
+      color = "#333333",
+      fillOpacity = 0.92,
+      bringToFront = TRUE
+    )
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = pal_nbi_barrio,
+    values = ~NBI_EST,
+    title = "% NBI estimado",
+    opacity = 0.9
+  ) %>%
+  setView(
+    lng = centro_lng,
+    lat = centro_lat,
+    zoom = 10
+  )
+```
+
+La comparación entre ambas coropletas no implica que el segundo mapa sea más preciso. Por el contrario, el mapa barrial añade una capa de modelización. Su utilidad reside en traducir de manera explícita y reproducible la información desde una zonificación censal hacia una zonificación social/administrativa más familiar para la lectura urbana.
+
+## Mapa con Minicharts: composición de las dimensiones de NBI por barrio
+
+El siguiente mapa utiliza **gráficos de torta** (*pie charts*) sobre los barrios. Para cada barrio se representan las cinco dimensiones específicas de NBI estimadas mediante interpolación areal.
+
+Es importante precisar qué representa la torta. Las cinco dimensiones de NBI **no son mutuamente excluyentes**: un mismo hogar puede presentar más de una carencia. Por ese motivo, cada sector no representa una proporción de hogares únicos, sino la **participación relativa de cada dimensión en el total de incidencias específicas de NBI estimadas para ese barrio**.
+
+La composición cartográfica se apoya en las variables visuales de Bertin:
+
+- **posición**: cada gráfico se ubica en un punto interior del barrio;
+- **matiz**: diferencia las cinco dimensiones, tratadas como categorías nominales;
+- **tamaño de los sectores**: representa el peso relativo de cada dimensión dentro del conjunto de incidencias específicas del barrio;
+- **tamaño total de la torta**: representa la magnitud estimada de hogares con al menos una NBI. El diámetro se escala con la raíz cuadrada del valor para que el área del símbolo crezca aproximadamente en proporción a la magnitud representada.
+
+Se utilizan colores cualitativos diferentes, sin asociar un orden jerárquico a los matices. El fondo de Argenmap y los límites barriales se mantienen subordinados a los símbolos temáticos para favorecer su lectura.
+
+```{r preparar-minicharts}
+# Se conservan los barrios con estimaciones positivas de hogares y
+# al menos una incidencia específica de NBI.
+barrios_pie <- barrios_nbi %>%
+  mutate(
+    INCIDENCIAS_NBI_EST =
+      NBI_CAP_SU_HOG_EST +
+      NBI_COND_S_HOG_EST +
+      NBI_ESCOLA_HOG_EST +
+      NBI_HACINA_HOG_EST +
+      NBI_VIV_IN_HOG_EST
+  ) %>%
+  filter(
+    !is.na(HOGARES_EST),
+    HOGARES_EST > 0,
+    !is.na(INCIDENCIAS_NBI_EST),
+    INCIDENCIAS_NBI_EST > 0
+  )
+
+# Se obtiene un punto garantizado dentro de cada polígono.
+puntos_pie <- barrios_pie %>%
+  st_point_on_surface() %>%
+  st_transform(4326)
+
+# Extraemos coordenadas y dejamos un data frame convencional,
+# tal como en el ejemplo de clase.
+coord_pie <- st_coordinates(puntos_pie)
+
+separated_coord <- puntos_pie %>%
+  mutate(
+    long = coord_pie[, 1],
+    lat = coord_pie[, 2]
+  ) %>%
+  st_drop_geometry() %>%
+  transmute(
+    Name,
+    long,
+    lat,
+    HOGARES_EST,
+    NBI_HOG_EST,
+    NBI_EST,
+    Subsistencia = NBI_CAP_SU_HOG_EST,
+    Sanitarias = NBI_COND_S_HOG_EST,
+    Escolaridad = NBI_ESCOLA_HOG_EST,
+    Hacinamiento = NBI_HACINA_HOG_EST,
+    Vivienda = NBI_VIV_IN_HOG_EST
+  )
+
+# Ante eventuales NA residuales, se reemplazan por cero para evitar
+# problemas de representación.
+cols_dimensiones <- c(
+  "Subsistencia",
+  "Sanitarias",
+  "Escolaridad",
+  "Hacinamiento",
+  "Vivienda"
+)
+
+separated_coord[cols_dimensiones] <-
+  lapply(separated_coord[cols_dimensiones], function(x) {
+    replace(x, is.na(x), 0)
+  })
+
+# El tamaño general de cada torta representa hogares con al menos una NBI.
+# Se usa raíz cuadrada para que el área del símbolo tenga una relación
+# aproximadamente proporcional con la magnitud.
+max_nbi_hog <- max(separated_coord$NBI_HOG_EST, na.rm = TRUE)
+
+separated_coord <- separated_coord %>%
+  mutate(
+    TAMANO_PIE = 12 +
+      30 * sqrt(NBI_HOG_EST) / sqrt(max_nbi_hog)
+  )
+
+# Paleta cualitativa: el color diferencia dimensiones nominales.
+colores_dimensiones <- c(
+  "#1B9E77",  # Capacidad de subsistencia
+  "#D95F02",  # Condiciones sanitarias
+  "#7570B3",  # Escolaridad
+  "#E7298A",  # Hacinamiento
+  "#66A61E"   # Vivienda inconveniente
+)
+
+# Extensión de la zonificación barrial para centrar el mapa en el área urbana.
+bb_barrios <- st_bbox(barrios_mapa)
+```
+
+```{r mapa-minicharts}
+leaflet(
+  width = "100%",
+  height = 650
+) %>%
+  addTiles(
+    urlTemplate = argenmap_url,
+    attribution = argenmap_attr,
+    options = tileOptions(minZoom = 2, maxZoom = 18)
+  ) %>%
+  addPolygons(
+    data = barrios_mapa,
+    color = "#3455C5",
+    weight = 1.0,
+    opacity = 0.75,
+    fillColor = "#5B7BEA",
+    fillOpacity = 0.07
+  ) %>%
+  addMinicharts(
+    separated_coord$long,
+    separated_coord$lat,
+    type = "pie",
+    chartdata = separated_coord[, cols_dimensiones],
+    colorPalette = colores_dimensiones,
+    width = separated_coord$TAMANO_PIE,
+    opacity = 0.92,
+    legend = TRUE,
+    legendPosition = "topright",
+    transitionTime = 0
+  ) %>%
+  fitBounds(
+    lng1 = as.numeric(bb_barrios[["xmin"]]),
+    lat1 = as.numeric(bb_barrios[["ymin"]]),
+    lng2 = as.numeric(bb_barrios[["xmax"]]),
+    lat2 = as.numeric(bb_barrios[["ymax"]])
+  )
+```
+
+La lectura del mapa combina dos dimensiones. Por un lado, el **diámetro de cada torta** permite reconocer barrios con mayor cantidad estimada de hogares con al menos una NBI. Por otro, la **composición de los sectores** permite comparar qué tipos de carencia tienen mayor participación relativa en cada barrio.
+
+Esta representación debe interpretarse como un recurso exploratorio. Dado que las dimensiones de NBI pueden superponerse en un mismo hogar, los sectores de la torta expresan la composición del conjunto de **incidencias específicas estimadas**, no una partición de hogares únicos. Asimismo, los valores barriales continúan siendo estimaciones derivadas de la interpolación areal y no estadísticas censales observadas directamente a esa escala.
+
+# Síntesis e interpretación
+
+El análisis muestra que las NBI poseen una distribución espacial heterogénea dentro de San Carlos de Bariloche, coherente con estudios que han descrito diferenciación y segregación residencial en la ciudad [@matossian2015bariloche; @niembro2019bariloche]. El análisis univariado permite reconocer dispersión, asimetrías y radios extremos; el análisis bivariado agrega información sobre asociaciones entre variables, mientras que la cartografía permite localizar esos patrones.
+
+La relación entre personas por hogar y hacinamiento constituye un ejemplo de asociación interpretable desde las características de los hogares, mientras que las correlaciones entre `NBI` y sus dimensiones deben leerse con cautela por la propia construcción del indicador.
+
+La operación de mayor complejidad metodológica es la interpolación areal desde radios hacia barrios. Esta transformación permite producir una lectura barrial, pero introduce un supuesto de homogeneidad interna en los radios. La estimación es especialmente sensible en radios extensos o con ocupación espacialmente concentrada. Por ello, los valores resultantes se denominan **estimados** y se evita presentarlos como datos censales observados.
+
+# Limitaciones
+
+Las principales limitaciones del análisis son:
+
+- Las variables de NBI se encuentran agregadas a nivel de radio censal.
+- Los porcentajes originales pueden incorporar redondeos.
+- Los límites de barrios y radios no coinciden.
+- La interpolación areal supone distribución homogénea dentro de cada radio.
+- La zonificación barrial no cubre necesariamente la totalidad de cada radio.
+- Los resultados pueden variar al cambiar la unidad espacial de análisis [@openshaw1984maup].
+- Las asociaciones observadas con datos agregados no deben trasladarse automáticamente a comportamientos individuales [@robinson1950ecological].
+- La capa de barrios fue brindada por el Municipio de San Carlos de Bariloche y se informó como correspondiente a 2023, aunque el archivo entregado no incluye una URL directa de descarga ni metadatos ampliados.
+
+Una alternativa metodológicamente superior para estimar población o NBI por barrio sería utilizar **interpolación dasimétrica** con información auxiliar de ocupación del suelo, parcelas edificadas, huellas de edificios o una grilla poblacional. Ese enfoque permitiría abandonar el supuesto de distribución uniforme dentro de cada radio. Sin embargo, requeriría fuentes auxiliares que no forman parte de los datasets disponibles en este trabajo.
+
+# Conclusiones
+
+El reporte integra manipulación tabular, estadística descriptiva, correlaciones, geometrías `sf`, visualización mediante la gramática de gráficos y cartografía temática interactiva. La incorporación de tres datasets permite pasar de una lectura exclusivamente censal a un análisis entre distintas zonificaciones territoriales.
+
+El uso de `mutate()`, `group_by()` y `summarise()` permite construir indicadores y resúmenes; `st_transform()`, `st_intersection()`, `st_area()` y `st_point_on_surface()` permiten operar con las geometrías; `ggplot2` organiza la exploración estadística mediante capas; y Leaflet permite comunicar los resultados mediante mapas web.
+
+La interpolación a barrios agrega una lectura territorial útil, pero su principal aporte metodológico consiste precisamente en hacer explícito que **transformar la unidad espacial también transforma la información disponible y sus incertidumbres**. Por ello, el resultado debe utilizarse como herramienta exploratoria y no como sustituto de estadísticas oficiales producidas directamente a escala barrial.
+
+# Referencias

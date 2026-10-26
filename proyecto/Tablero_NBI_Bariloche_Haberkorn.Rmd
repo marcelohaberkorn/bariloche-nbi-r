@@ -1,0 +1,1018 @@
+---
+title: "NBI en San Carlos de Bariloche"
+author: "Marcelo Haberkorn"
+date: "09/10/2026"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    theme: cosmo
+    self_contained: true
+    social: ["facebook", "linkedin"]
+    source_code: embed
+---
+
+<style>
+.no-title .chart-title {
+  display: none !important;
+}
+.no-title .chart-stage {
+  top: 0 !important;
+}
+
+/* La pestaña Indicadores aprovecha todo el ancho y alto disponible. */
+#indicadores {
+  padding: 0 !important;
+}
+
+#indicadores .dashboard-column {
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+  height: 100% !important;
+}
+
+#indicadores .chart-wrapper {
+  margin-top: 4px !important;
+  margin-bottom: 4px !important;
+}
+
+/* Gauges: dos paneles iguales que ocupan toda la mitad izquierda. */
+#indicadores .dashboard-column:nth-of-type(1) {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+#indicadores .dashboard-column:nth-of-type(1) .chart-wrapper {
+  flex: 1 1 50% !important;
+  min-height: 0 !important;
+}
+
+/* ValueBox: tres paneles iguales por columna, ocupando toda la altura. */
+#indicadores .dashboard-column:nth-of-type(2),
+#indicadores .dashboard-column:nth-of-type(3) {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+#indicadores .dashboard-column:nth-of-type(2) .chart-wrapper,
+#indicadores .dashboard-column:nth-of-type(3) .chart-wrapper {
+  flex: 1 1 33.333% !important;
+  min-height: 0 !important;
+}
+
+/* Reduce márgenes internos para que los valueBox llenen sus celdas. */
+#indicadores .value-box {
+  height: 100% !important;
+  margin-bottom: 0 !important;
+}
+
+#indicadores .gauge {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Los gauges de la mitad izquierda ocupan visualmente casi todo el panel. */
+#indicadores .dashboard-column:nth-of-type(1) .chart-stage {
+  overflow: hidden !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+#indicadores .dashboard-column:nth-of-type(1) .gauge svg {
+  width: 96% !important;
+  height: 96% !important;
+  max-width: none !important;
+  max-height: none !important;
+}
+</style>
+
+<script>
+/*
+  JustGage deja espacio interno vacío dentro del SVG.
+  Este ajuste recalcula el viewBox alrededor del contenido real
+  (arco, valor y etiquetas), de modo que el semicírculo aproveche
+  mucho mejor el recuadro asignado sin deformar su proporción.
+*/
+(function() {
+  function fitGaugeToContent(gauge) {
+    var svg = gauge.querySelector("svg");
+    if (!svg) return;
+
+    var elements = svg.querySelectorAll("path, text");
+    if (!elements.length) return;
+
+    var minX = Infinity, minY = Infinity;
+    var maxX = -Infinity, maxY = -Infinity;
+
+    elements.forEach(function(el) {
+      try {
+        var b = el.getBBox();
+        if (!isFinite(b.x) || !isFinite(b.y) ||
+            !isFinite(b.width) || !isFinite(b.height)) return;
+
+        minX = Math.min(minX, b.x);
+        minY = Math.min(minY, b.y);
+        maxX = Math.max(maxX, b.x + b.width);
+        maxY = Math.max(maxY, b.y + b.height);
+      } catch (e) {}
+    });
+
+    if (!isFinite(minX) || !isFinite(minY) ||
+        !isFinite(maxX) || !isFinite(maxY)) return;
+
+    var width = maxX - minX;
+    var height = maxY - minY;
+
+    /* pequeño margen para no cortar extremos, números ni etiquetas */
+    var padX = width * 0.055;
+    var padY = height * 0.10;
+
+    svg.setAttribute(
+      "viewBox",
+      (minX - padX) + " " +
+      (minY - padY) + " " +
+      (width + 2 * padX) + " " +
+      (height + 2 * padY)
+    );
+
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  }
+
+  function fitAllGauges() {
+    document
+      .querySelectorAll("#indicadores .dashboard-column:nth-of-type(1) .gauge")
+      .forEach(fitGaugeToContent);
+  }
+
+  window.addEventListener("load", function() {
+    setTimeout(fitAllGauges, 700);
+    setTimeout(fitAllGauges, 1500);
+  });
+
+  window.addEventListener("resize", function() {
+    setTimeout(fitAllGauges, 150);
+  });
+})();
+</script>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.retina = 2
+)
+
+options(scipen = 999)
+
+library(flexdashboard)
+library(sf)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(leaflet)
+library(leaflet.minicharts)
+library(DT)
+
+fmt_num <- function(x, dec = 0) {
+  format(
+    round(x, dec),
+    big.mark = ".",
+    decimal.mark = ",",
+    nsmall = dec,
+    trim = TRUE,
+    scientific = FALSE
+  )
+}
+
+media_pond <- function(x, w) {
+  if (sum(w, na.rm = TRUE) == 0) return(NA_real_)
+  weighted.mean(x, w = w, na.rm = TRUE)
+}
+```
+
+```{r datos, include=FALSE}
+archivo_radios <- "Radios_censales_Bariloche.geojson"
+archivo_limite <- "Limite municipio Bariloche.geojson"
+archivo_barrios <- "Barrios_Bariloche.geojson"
+
+archivos <- c(archivo_radios, archivo_limite, archivo_barrios)
+
+if (!all(file.exists(archivos))) {
+  stop(
+    paste0(
+      "No se encontraron todos los GeoJSON requeridos. ",
+      "Guardar los tres archivos en la misma carpeta que este Rmd: ",
+      paste(archivos, collapse = ", ")
+    )
+  )
+}
+
+radios_original <- st_read(archivo_radios, quiet = TRUE)
+limite_original <- st_read(archivo_limite, quiet = TRUE)
+barrios_original <- st_read(archivo_barrios, quiet = TRUE)
+
+nombre_frac <- intersect(
+  c("FRAC/RAD", "FRAC.RAD", "FRAC_RAD"),
+  names(radios_original)
+)
+
+if (length(nombre_frac) == 1) {
+  names(radios_original)[names(radios_original) == nombre_frac] <- "FRAC_RAD"
+} else if (length(nombre_frac) == 0) {
+  stop(
+    paste0(
+      "No se encontró el campo FRAC/RAD. Campos disponibles: ",
+      paste(names(radios_original), collapse = ", ")
+    )
+  )
+}
+
+radios_original <- radios_original %>%
+  select(
+    NOMDEPTO, CRO, TRO, SAG, VIVIENDAS, POBLACION, NBI,
+    NBI_CAP_SU, NBI_COND_S, HOGARES, NBI_ESCOLA,
+    NBI_HACINA, NBI_VIV_IN, FRAC_RAD, geometry
+  )
+
+limite_original <- limite_original %>%
+  select(gid, fna, gna, nam, in1, fdc, sag, geometry)
+
+barrios_original <- barrios_original %>%
+  select(Name, geometry)
+
+radios <- radios_original %>%
+  st_make_valid() %>%
+  st_transform(4326) %>%
+  mutate(
+    TIPO_RADIO = case_when(
+      TRO == 1 ~ "Urbano",
+      TRO == 2 ~ "Rural",
+      TRO == 3 ~ "Mixto",
+      TRUE ~ "Sin clasificar"
+    ),
+    TIPO_RADIO = factor(
+      TIPO_RADIO,
+      levels = c("Urbano", "Rural", "Mixto", "Sin clasificar")
+    ),
+    PERSONAS_HOGAR = if_else(
+      HOGARES > 0,
+      POBLACION / HOGARES,
+      NA_real_
+    ),
+    FRACCION = substr(as.character(CRO), 6, 7)
+  )
+
+vars_nbi <- c(
+  "NBI", "NBI_CAP_SU", "NBI_COND_S",
+  "NBI_ESCOLA", "NBI_HACINA", "NBI_VIV_IN"
+)
+
+etiquetas_nbi <- c(
+  NBI = "NBI total",
+  NBI_CAP_SU = "Capacidad de subsistencia",
+  NBI_COND_S = "Condiciones sanitarias",
+  NBI_ESCOLA = "Escolaridad",
+  NBI_HACINA = "Hacinamiento",
+  NBI_VIV_IN = "Vivienda inconveniente"
+)
+
+cortes_nbi <- as.numeric(
+  quantile(
+    radios$NBI,
+    probs = c(0, 0.25, 0.50, 0.75, 1),
+    na.rm = TRUE
+  )
+)
+
+radios <- radios %>%
+  mutate(
+    NBI_CATEGORIA = cut(
+      NBI,
+      breaks = c(
+        -Inf,
+        cortes_nbi[2],
+        cortes_nbi[3],
+        cortes_nbi[4],
+        Inf
+      ),
+      labels = c("Bajo", "Medio", "Alto", "Muy alto"),
+      include.lowest = TRUE,
+      ordered_result = TRUE
+    )
+  )
+
+epsg_metricas <- 5345
+
+radios_proj <- radios %>%
+  st_make_valid() %>%
+  st_transform(epsg_metricas) %>%
+  mutate(
+    AREA_RADIO_M2 = as.numeric(st_area(geometry)),
+    AREA_RADIO_KM2 = AREA_RADIO_M2 / 1e6
+  )
+
+limite_proj <- limite_original %>%
+  st_make_valid() %>%
+  st_transform(epsg_metricas)
+
+barrios_proj <- barrios_original %>%
+  st_make_valid() %>%
+  st_transform(epsg_metricas)
+
+barrios_recortados <- st_intersection(
+  barrios_proj %>% select(Name),
+  limite_proj %>% select(gid)
+) %>%
+  group_by(Name) %>%
+  summarise(do_union = TRUE, .groups = "drop") %>%
+  mutate(
+    AREA_BARRIO_M2 = as.numeric(st_area(geometry)),
+    AREA_BARRIO_KM2 = AREA_BARRIO_M2 / 1e6
+  )
+
+intersecciones <- st_intersection(
+  radios_proj %>%
+    select(
+      CRO, POBLACION, HOGARES, VIVIENDAS,
+      NBI, NBI_CAP_SU, NBI_COND_S,
+      NBI_ESCOLA, NBI_HACINA, NBI_VIV_IN,
+      AREA_RADIO_M2
+    ),
+  barrios_recortados %>%
+    select(Name)
+) %>%
+  mutate(
+    AREA_INTERSECCION_M2 = as.numeric(st_area(geometry)),
+    PROP_AREA_RAW = AREA_INTERSECCION_M2 / AREA_RADIO_M2
+  ) %>%
+  group_by(CRO) %>%
+  mutate(
+    SUMA_PROP_RADIO = sum(PROP_AREA_RAW, na.rm = TRUE),
+    FACTOR_AJUSTE = if_else(
+      SUMA_PROP_RADIO > 1,
+      1 / SUMA_PROP_RADIO,
+      1
+    ),
+    PROP_AREA = PROP_AREA_RAW * FACTOR_AJUSTE
+  ) %>%
+  ungroup() %>%
+  mutate(
+    POBLACION_EST = POBLACION * PROP_AREA,
+    HOGARES_EST = HOGARES * PROP_AREA,
+    VIVIENDAS_EST = VIVIENDAS * PROP_AREA,
+    NBI_HOG_EST = HOGARES * (NBI / 100) * PROP_AREA,
+    NBI_CAP_SU_HOG_EST = HOGARES * (NBI_CAP_SU / 100) * PROP_AREA,
+    NBI_COND_S_HOG_EST = HOGARES * (NBI_COND_S / 100) * PROP_AREA,
+    NBI_ESCOLA_HOG_EST = HOGARES * (NBI_ESCOLA / 100) * PROP_AREA,
+    NBI_HACINA_HOG_EST = HOGARES * (NBI_HACINA / 100) * PROP_AREA,
+    NBI_VIV_IN_HOG_EST = HOGARES * (NBI_VIV_IN / 100) * PROP_AREA
+  )
+
+resumen_barrios <- intersecciones %>%
+  st_drop_geometry() %>%
+  group_by(Name) %>%
+  summarise(
+    POBLACION_EST = sum(POBLACION_EST, na.rm = TRUE),
+    HOGARES_EST = sum(HOGARES_EST, na.rm = TRUE),
+    VIVIENDAS_EST = sum(VIVIENDAS_EST, na.rm = TRUE),
+    NBI_HOG_EST = sum(NBI_HOG_EST, na.rm = TRUE),
+    NBI_CAP_SU_HOG_EST = sum(NBI_CAP_SU_HOG_EST, na.rm = TRUE),
+    NBI_COND_S_HOG_EST = sum(NBI_COND_S_HOG_EST, na.rm = TRUE),
+    NBI_ESCOLA_HOG_EST = sum(NBI_ESCOLA_HOG_EST, na.rm = TRUE),
+    NBI_HACINA_HOG_EST = sum(NBI_HACINA_HOG_EST, na.rm = TRUE),
+    NBI_VIV_IN_HOG_EST = sum(NBI_VIV_IN_HOG_EST, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    NBI_EST = if_else(HOGARES_EST > 0, 100 * NBI_HOG_EST / HOGARES_EST, NA_real_),
+    NBI_CAP_SU_EST = if_else(HOGARES_EST > 0, 100 * NBI_CAP_SU_HOG_EST / HOGARES_EST, NA_real_),
+    NBI_COND_S_EST = if_else(HOGARES_EST > 0, 100 * NBI_COND_S_HOG_EST / HOGARES_EST, NA_real_),
+    NBI_ESCOLA_EST = if_else(HOGARES_EST > 0, 100 * NBI_ESCOLA_HOG_EST / HOGARES_EST, NA_real_),
+    NBI_HACINA_EST = if_else(HOGARES_EST > 0, 100 * NBI_HACINA_HOG_EST / HOGARES_EST, NA_real_),
+    NBI_VIV_IN_EST = if_else(HOGARES_EST > 0, 100 * NBI_VIV_IN_HOG_EST / HOGARES_EST, NA_real_)
+  )
+
+barrios_nbi <- barrios_recortados %>%
+  select(Name, AREA_BARRIO_KM2) %>%
+  left_join(resumen_barrios, by = "Name") %>%
+  mutate(
+    DENSIDAD_POB_EST = if_else(
+      AREA_BARRIO_KM2 > 0,
+      POBLACION_EST / AREA_BARRIO_KM2,
+      NA_real_
+    )
+  )
+
+resumen_fraccion <- radios %>%
+  st_drop_geometry() %>%
+  group_by(FRACCION) %>%
+  summarise(
+    RADIOS = n(),
+    NBI_PONDERADO = media_pond(NBI, HOGARES),
+    HACINAMIENTO_PONDERADO = media_pond(NBI_HACINA, HOGARES),
+    POBLACION = sum(POBLACION, na.rm = TRUE),
+    HOGARES = sum(HOGARES, na.rm = TRUE),
+    VIVIENDAS = sum(VIVIENDAS, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(POBLACION))
+
+nbi_ponderado <- weighted.mean(radios$NBI, w = radios$HOGARES, na.rm = TRUE)
+
+cobertura_hogares <- 100 *
+  sum(barrios_nbi$HOGARES_EST, na.rm = TRUE) /
+  sum(radios$HOGARES, na.rm = TRUE)
+
+gauge_max_nbi <- max(25, ceiling(max(radios$NBI, na.rm = TRUE) / 5) * 5)
+
+variables_cor <- c(
+  "POBLACION", "HOGARES", "VIVIENDAS", "PERSONAS_HOGAR",
+  "NBI", "NBI_CAP_SU", "NBI_COND_S",
+  "NBI_ESCOLA", "NBI_HACINA", "NBI_VIV_IN"
+)
+
+datos_cor <- radios %>%
+  st_drop_geometry() %>%
+  select(all_of(variables_cor))
+
+matriz_cor <- cor(
+  datos_cor,
+  use = "pairwise.complete.obs",
+  method = "pearson"
+)
+
+cor_larga <- as.data.frame(as.table(matriz_cor)) %>%
+  rename(
+    Variable_1 = Var1,
+    Variable_2 = Var2,
+    Correlacion = Freq
+  )
+
+datos_nbi_largo <- radios %>%
+  st_drop_geometry() %>%
+  select(all_of(vars_nbi)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Porcentaje"
+  ) %>%
+  mutate(
+    Dimension = recode(Variable, !!!etiquetas_nbi)
+  )
+
+radios_mapa <- radios_proj %>% st_transform(4326)
+barrios_mapa <- barrios_nbi %>% st_transform(4326)
+limite_mapa <- limite_proj %>% st_transform(4326)
+
+bb_limite <- st_bbox(limite_mapa)
+bb_barrios <- st_bbox(barrios_mapa)
+
+centro_lng <- mean(c(as.numeric(bb_limite[["xmin"]]), as.numeric(bb_limite[["xmax"]])))
+centro_lat <- mean(c(as.numeric(bb_limite[["ymin"]]), as.numeric(bb_limite[["ymax"]])))
+
+argenmap_url <- paste0(
+  "https://wms.ign.gob.ar/geoserver/gwc/service/tms/1.0.0/",
+  "capabaseargenmap@EPSG%3A3857@png/{z}/{x}/{-y}.png"
+)
+
+argenmap_attr <- "Leaflet · Instituto Geográfico Nacional · OpenStreetMap"
+
+pal_nbi <- colorBin(
+  palette = "YlOrRd",
+  domain = radios_mapa$NBI,
+  bins = cortes_nbi,
+  pretty = FALSE,
+  na.color = "#BDBDBD"
+)
+
+pal_nbi_barrio <- colorBin(
+  palette = "YlOrRd",
+  domain = barrios_mapa$NBI_EST,
+  bins = cortes_nbi,
+  pretty = FALSE,
+  na.color = "#BDBDBD"
+)
+
+popup_radio <- paste0(
+  "<b>Radio:</b> ", radios_mapa$CRO,
+  "<br><b>Tipo:</b> ", radios_mapa$TIPO_RADIO,
+  "<br><b>Población:</b> ", fmt_num(radios_mapa$POBLACION),
+  "<br><b>Hogares:</b> ", fmt_num(radios_mapa$HOGARES),
+  "<br><b>NBI:</b> ", fmt_num(radios_mapa$NBI, 2), "%"
+)
+
+popup_barrio <- paste0(
+  "<b>Barrio:</b> ", barrios_mapa$Name,
+  "<br><b>Población estimada:</b> ", fmt_num(barrios_mapa$POBLACION_EST),
+  "<br><b>Hogares estimados:</b> ", fmt_num(barrios_mapa$HOGARES_EST),
+  "<br><b>NBI estimado:</b> ", fmt_num(barrios_mapa$NBI_EST, 2), "%",
+  "<br><i>Estimación por interpolación areal</i>"
+)
+
+barrios_pie <- barrios_nbi %>%
+  mutate(
+    INCIDENCIAS_NBI_EST =
+      NBI_CAP_SU_HOG_EST + NBI_COND_S_HOG_EST + NBI_ESCOLA_HOG_EST +
+      NBI_HACINA_HOG_EST + NBI_VIV_IN_HOG_EST
+  ) %>%
+  filter(
+    !is.na(HOGARES_EST), HOGARES_EST > 0,
+    !is.na(INCIDENCIAS_NBI_EST), INCIDENCIAS_NBI_EST > 0
+  )
+
+puntos_pie <- barrios_pie %>%
+  st_point_on_surface() %>%
+  st_transform(4326)
+
+coord_pie <- st_coordinates(puntos_pie)
+
+separated_coord <- puntos_pie %>%
+  mutate(
+    long = coord_pie[, 1],
+    lat = coord_pie[, 2]
+  ) %>%
+  st_drop_geometry() %>%
+  transmute(
+    Name,
+    long,
+    lat,
+    HOGARES_EST,
+    NBI_HOG_EST,
+    NBI_EST,
+    Subsistencia = NBI_CAP_SU_HOG_EST,
+    Sanitarias = NBI_COND_S_HOG_EST,
+    Escolaridad = NBI_ESCOLA_HOG_EST,
+    Hacinamiento = NBI_HACINA_HOG_EST,
+    Vivienda = NBI_VIV_IN_HOG_EST
+  )
+
+cols_dimensiones <- c("Subsistencia", "Sanitarias", "Escolaridad", "Hacinamiento", "Vivienda")
+
+separated_coord[cols_dimensiones] <-
+  lapply(separated_coord[cols_dimensiones], function(x) replace(x, is.na(x), 0))
+
+max_nbi_hog <- max(separated_coord$NBI_HOG_EST, na.rm = TRUE)
+
+separated_coord <- separated_coord %>%
+  mutate(
+    TAMANO_PIE = 12 + 30 * sqrt(NBI_HOG_EST) / sqrt(max_nbi_hog)
+  )
+
+colores_dimensiones <- c(
+  "#1B9E77",
+  "#D95F02",
+  "#7570B3",
+  "#E7298A",
+  "#66A61E"
+)
+
+tabla_radios <- radios %>%
+  st_drop_geometry() %>%
+  transmute(
+    Radio = CRO,
+    Tipo = as.character(TIPO_RADIO),
+    Fraccion = FRACCION,
+    Poblacion = POBLACION,
+    Hogares = HOGARES,
+    Viviendas = VIVIENDAS,
+    Personas_por_hogar = round(PERSONAS_HOGAR, 2),
+    NBI = round(NBI, 2),
+    NBI_hacinamiento = round(NBI_HACINA, 2),
+    Categoria_NBI = as.character(NBI_CATEGORIA)
+  )
+
+tabla_barrios <- barrios_nbi %>%
+  st_drop_geometry() %>%
+  transmute(
+    Barrio = Name,
+    Poblacion_est = round(POBLACION_EST),
+    Hogares_est = round(HOGARES_EST),
+    Viviendas_est = round(VIVIENDAS_EST),
+    NBI_est = round(NBI_EST, 2),
+    Subsistencia_est = round(NBI_CAP_SU_EST, 2),
+    Sanitarias_est = round(NBI_COND_S_EST, 2),
+    Escolaridad_est = round(NBI_ESCOLA_EST, 2),
+    Hacinamiento_est = round(NBI_HACINA_EST, 2),
+    Vivienda_inconveniente_est = round(NBI_VIV_IN_EST, 2),
+    Densidad_pob_est = round(DENSIDAD_POB_EST, 1)
+  ) %>%
+  arrange(desc(NBI_est))
+
+# Extensión común para los tres mapas temáticos.
+# Se usa la cobertura de los radios, que engloba prácticamente toda
+# el área de estudio censal de Bariloche sin abrir la vista a la
+# extensa superficie occidental del municipio.
+bb_estudio <- st_bbox(radios_mapa)
+```
+
+# Indicadores {data-icon="fa-dashboard" data-orientation=columns}
+
+## Column {data-width=50}
+
+### Cobertura barrial del municipio
+
+```{r}
+flexdashboard::gauge(
+  round(cobertura_hogares, 1),
+  min = 0,
+  max = 100,
+  symbol = "%",
+  label = "",
+  sectors = flexdashboard::gaugeSectors(
+    colors = "info"
+  )
+)
+```
+
+### NBI ponderado
+
+```{r}
+flexdashboard::gauge(
+  round(nbi_ponderado, 1),
+  min = 0,
+  max = gauge_max_nbi,
+  symbol = "%",
+  label = "",
+  sectors = flexdashboard::gaugeSectors(
+    success = c(0, cortes_nbi[2]),
+    warning = c(cortes_nbi[2], cortes_nbi[4]),
+    danger = c(cortes_nbi[4], gauge_max_nbi)
+  )
+)
+```
+
+## Column {data-width=25}
+
+### Población total
+
+```{r}
+flexdashboard::valueBox(
+  fmt_num(sum(radios$POBLACION, na.rm = TRUE)),
+  caption = "Población",
+  icon = "fa-users",
+  color = "primary"
+)
+```
+
+### Viviendas
+
+```{r}
+flexdashboard::valueBox(
+  fmt_num(sum(radios$VIVIENDAS, na.rm = TRUE)),
+  caption = "Viviendas",
+  icon = "fa-building",
+  color = "success"
+)
+```
+
+### Radios censales
+
+```{r}
+flexdashboard::valueBox(
+  fmt_num(nrow(radios)),
+  caption = "Radios censales",
+  icon = "fa-map",
+  color = "warning"
+)
+```
+
+## Column {data-width=25}
+
+### Hogares
+
+```{r}
+flexdashboard::valueBox(
+  fmt_num(sum(radios$HOGARES, na.rm = TRUE)),
+  caption = "Hogares",
+  icon = "fa-home",
+  color = "info"
+)
+```
+
+### Barrios
+
+```{r}
+flexdashboard::valueBox(
+  fmt_num(nrow(barrios_nbi)),
+  caption = "Barrios",
+  icon = "fa-th-large",
+  color = "primary"
+)
+```
+
+### Fracciones censales
+
+```{r}
+flexdashboard::valueBox(
+  fmt_num(dplyr::n_distinct(radios$FRACCION)),
+  caption = "Fracciones censales",
+  icon = "fa-th",
+  color = "info"
+)
+```
+
+
+# Estadística {data-icon="fa-bar-chart"}
+
+## Row {data-height=470}
+
+### Histograma de NBI
+
+```{r, fig.width=7.2, fig.height=4.3}
+ggplot(st_drop_geometry(radios), aes(x = NBI)) +
+  geom_histogram(
+    binwidth = 2,
+    boundary = 0,
+    color = "white",
+    linewidth = 0.25
+  ) +
+  geom_vline(
+    xintercept = mean(radios$NBI, na.rm = TRUE),
+    linetype = "dashed",
+    linewidth = 0.8
+  ) +
+  labs(x = "Hogares con NBI (%)", y = "Cantidad de radios") +
+  theme_minimal(base_size = 11)
+```
+
+### Boxplot de NBI
+
+```{r, fig.width=7.2, fig.height=4.3}
+ggplot(datos_nbi_largo, aes(x = Dimension, y = Porcentaje)) +
+  geom_boxplot(outlier.alpha = 0.55) +
+  coord_flip() +
+  labs(x = NULL, y = "Hogares (%)") +
+  theme_minimal(base_size = 11)
+```
+
+## Row {data-height=470}
+
+### Matriz de correlación
+
+```{r, fig.width=7.4, fig.height=5.0}
+ggplot(
+  cor_larga,
+  aes(x = Variable_1, y = Variable_2, fill = Correlacion)
+) +
+  geom_tile(color = "white", linewidth = 0.25) +
+  geom_text(aes(label = sprintf("%.2f", Correlacion)), size = 2.4) +
+  scale_fill_gradient2(
+    low = "#2166AC",
+    mid = "white",
+    high = "#B2182B",
+    midpoint = 0,
+    limits = c(-1, 1)
+  ) +
+  coord_equal() +
+  labs(x = NULL, y = NULL, fill = "r") +
+  theme_minimal(base_size = 9) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Personas por hogar y hacinamiento
+
+```{r, fig.width=7.2, fig.height=4.5}
+ggplot(
+  st_drop_geometry(radios),
+  aes(x = PERSONAS_HOGAR, y = NBI_HACINA)
+) +
+  geom_point(alpha = 0.65) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 0.8) +
+  labs(
+    x = "Personas por hogar",
+    y = "NBI por hacinamiento (%)"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+# Superposición geométrica {data-icon="fa-code-fork"}
+
+## Row {data-height=650}
+
+### {.no-title}
+
+```{r, fig.width=13.5, fig.height=6.8}
+ggplot() +
+  geom_sf(
+    data = limite_proj,
+    aes(color = "Límite municipal"),
+    fill = NA,
+    linewidth = 0.8,
+    show.legend = TRUE
+  ) +
+  geom_sf(
+    data = barrios_recortados,
+    aes(color = "Barrios"),
+    fill = NA,
+    linewidth = 0.25,
+    alpha = 0.9,
+    show.legend = TRUE
+  ) +
+  geom_sf(
+    data = radios_proj,
+    aes(color = "Radios censales"),
+    fill = NA,
+    linewidth = 0.18,
+    alpha = 0.7,
+    show.legend = TRUE
+  ) +
+  scale_color_manual(
+    name = "Capas",
+    values = c(
+      "Límite municipal" = "black",
+      "Barrios" = "#2C7FB8",
+      "Radios censales" = "#D95F0E"
+    )
+  ) +
+  coord_sf(datum = NA) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.title = element_blank(),
+    axis.text = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = margin(2, 2, 2, 2),
+    legend.position = c(0.18, 0.18),
+    legend.background = element_rect(
+      fill = "white",
+      color = "grey70"
+    )
+  )
+```
+
+
+# Cartografía temática {data-icon="fa-map-marker"}
+
+## Mapas {.tabset .tabset-fade}
+
+### NBI por radio
+
+```{r}
+leaflet(
+  data = radios_mapa,
+  options = leafletOptions(preferCanvas = TRUE)
+) %>%
+  addTiles(
+    urlTemplate = argenmap_url,
+    attribution = argenmap_attr,
+    options = tileOptions(minZoom = 2, maxZoom = 18)
+  ) %>%
+  addPolygons(
+    color = "#FFFFFF",
+    weight = 0.7,
+    opacity = 1,
+    fillColor = ~pal_nbi(NBI),
+    fillOpacity = 0.80,
+    popup = popup_radio,
+    highlightOptions = highlightOptions(
+      weight = 3,
+      color = "#333333",
+      fillOpacity = 0.92,
+      bringToFront = TRUE
+    )
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = pal_nbi,
+    values = ~NBI,
+    title = "% de hogares con NBI",
+    opacity = 0.9
+  ) %>%
+  setView(lng = centro_lng, lat = centro_lat, zoom = 10)
+```
+
+### NBI estimado por barrio
+
+```{r}
+leaflet(
+  data = barrios_mapa,
+  options = leafletOptions(preferCanvas = TRUE)
+) %>%
+  addTiles(
+    urlTemplate = argenmap_url,
+    attribution = argenmap_attr,
+    options = tileOptions(minZoom = 2, maxZoom = 18)
+  ) %>%
+  addPolygons(
+    color = "#FFFFFF",
+    weight = 0.8,
+    opacity = 1,
+    fillColor = ~pal_nbi_barrio(NBI_EST),
+    fillOpacity = 0.80,
+    popup = popup_barrio,
+    highlightOptions = highlightOptions(
+      weight = 3,
+      color = "#333333",
+      fillOpacity = 0.92,
+      bringToFront = TRUE
+    )
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = pal_nbi_barrio,
+    values = ~NBI_EST,
+    title = "% NBI estimado",
+    opacity = 0.9
+  ) %>%
+  fitBounds(
+    lng1 = as.numeric(bb_estudio[["xmin"]]),
+    lat1 = as.numeric(bb_estudio[["ymin"]]),
+    lng2 = as.numeric(bb_estudio[["xmax"]]),
+    lat2 = as.numeric(bb_estudio[["ymax"]])
+  )
+```
+
+### Dimensiones de NBI por barrio
+
+```{r}
+leaflet() %>%
+  addTiles(
+    urlTemplate = argenmap_url,
+    attribution = argenmap_attr,
+    options = tileOptions(minZoom = 2, maxZoom = 18)
+  ) %>%
+  addPolygons(
+    data = barrios_mapa,
+    color = "#3455C5",
+    weight = 1.0,
+    opacity = 0.75,
+    fillColor = "#5B7BEA",
+    fillOpacity = 0.07
+  ) %>%
+  addMinicharts(
+    separated_coord$long,
+    separated_coord$lat,
+    type = "pie",
+    chartdata = separated_coord[, cols_dimensiones],
+    colorPalette = colores_dimensiones,
+    width = separated_coord$TAMANO_PIE,
+    opacity = 0.92,
+    legend = TRUE,
+    legendPosition = "topright",
+    transitionTime = 0
+  ) %>%
+  fitBounds(
+    lng1 = as.numeric(bb_estudio[["xmin"]]),
+    lat1 = as.numeric(bb_estudio[["ymin"]]),
+    lng2 = as.numeric(bb_estudio[["xmax"]]),
+    lat2 = as.numeric(bb_estudio[["ymax"]])
+  )
+```
+
+# Listados {data-icon="fa-table"}
+
+## Tablas {.tabset .tabset-fade}
+
+### Radios censales
+
+```{r}
+DT::datatable(
+  tabla_radios,
+  rownames = FALSE,
+  filter = "top",
+  extensions = "Buttons",
+  options = list(
+    pageLength = 15,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel")
+  )
+)
+```
+
+### Barrios
+
+```{r}
+DT::datatable(
+  tabla_barrios,
+  rownames = FALSE,
+  filter = "top",
+  extensions = "Buttons",
+  options = list(
+    pageLength = 15,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel")
+  )
+)
+```
+
+### Fracciones censales
+
+```{r}
+DT::datatable(
+  resumen_fraccion,
+  rownames = FALSE,
+  filter = "top",
+  extensions = "Buttons",
+  options = list(
+    pageLength = 15,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel")
+  )
+)
+```
