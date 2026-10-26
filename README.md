@@ -1,20 +1,20 @@
-\# Necesidades Básicas Insatisfechas en San Carlos de Bariloche
+# Necesidades Básicas Insatisfechas en San Carlos de Bariloche
 
 
 
-\### Análisis espacial, cartografía temática y visualización interactiva con R
+### Análisis espacial, cartografía temática y visualización interactiva con R
 
 
 
-\*\*Autor:\*\* Marcelo Haberkorn  
+**Autor:** Marcelo Haberkorn  
 
-\*\*Año:\*\* 2026  
+**Año:** 2026  
 
-\*\*Área de estudio:\*\* San Carlos de Bariloche, Río Negro, Argentina.
+**Área de estudio:** San Carlos de Bariloche, Río Negro, Argentina.
 
 
 
-\## Descripción
+## Descripción
 
 
 
@@ -30,77 +30,77 @@ Se desarrollaron dos productos complementarios:
 
 
 
-1\. Un reporte técnico reproducible mediante R Markdown.
+1. Un reporte técnico reproducible mediante R Markdown.
 
-2\. Un tablero interactivo para explorar indicadores estadísticos y territoriales.
-
-
-
-\## Objetivos
+2. Un tablero interactivo para explorar indicadores estadísticos y territoriales.
 
 
 
-\- Analizar la distribución territorial de los indicadores de NBI.
-
-\- Explorar relaciones entre variables censales.
-
-\- Integrar distintas unidades de análisis espacial.
-
-\- Aplicar técnicas de superposición e interpolación areal.
-
-\- Representar los resultados mediante cartografía temática.
-
-\- Desarrollar herramientas interactivas de visualización.
+## Objetivos
 
 
 
-\## Herramientas utilizadas
+- Analizar la distribución territorial de los indicadores de NBI.
+
+- Explorar relaciones entre variables censales.
+
+- Integrar distintas unidades de análisis espacial.
+
+- Aplicar técnicas de superposición e interpolación areal.
+
+- Representar los resultados mediante cartografía temática.
+
+- Desarrollar herramientas interactivas de visualización.
 
 
 
-\*\*Lenguaje:\*\* R
+## Herramientas utilizadas
 
 
 
-\*\*Principales paquetes:\*\*
+**Lenguaje:** R
 
 
 
-\- sf
-
-\- dplyr
-
-\- tidyr
-
-\- ggplot2
-
-\- leaflet
-
-\- leaflet.minicharts
-
-\- flexdashboard
-
-\- DT
-
-\- knitr
+**Principales paquetes:**
 
 
 
-\*\*Tecnologías complementarias:\*\*
+- sf
+
+- dplyr
+
+- tidyr
+
+- ggplot2
+
+- leaflet
+
+- leaflet.minicharts
+
+- flexdashboard
+
+- DT
+
+- knitr
 
 
 
-\- R Markdown
-
-\- HTML
-
-\- GeoJSON
-
-\- ArgenMap / IGN
+**Tecnologías complementarias:**
 
 
 
-\## Metodología
+- R Markdown
+
+- HTML
+
+- GeoJSON
+
+- ArgenMap / IGN
+
+
+
+## Metodología
 
 
 
@@ -120,11 +120,11 @@ Los resultados obtenidos mediante este procedimiento constituyen estimaciones ex
 
 
 
-\## Productos desarrollados
+## Productos desarrollados
 
 
 
-\### 1. Reporte técnico
+### 1. Reporte técnico
 
 
 
@@ -132,19 +132,19 @@ Documento que integra:
 
 
 
-\- Descripción de fuentes y atributos.
+- Descripción de fuentes y atributos.
 
-\- Análisis estadístico exploratorio.
+- Análisis estadístico exploratorio.
 
-\- Análisis bivariado.
+- Análisis bivariado.
 
-\- Procesamiento de geometrías.
+- Procesamiento de geometrías.
 
-\- Cartografía temática.
+- Cartografía temática.
 
-\- Interpretación territorial.
+- Interpretación territorial.
 
-\- Limitaciones metodológicas y conclusiones.
+- Limitaciones metodológicas y conclusiones.
 
 
 #### Cartografía temática del reporte
@@ -155,7 +155,7 @@ Documento que integra:
 
 
 
-\### 2. Tablero interactivo
+### 2. Tablero interactivo
 
 
 
@@ -163,15 +163,15 @@ Herramienta de visualización desarrollada mediante Flexdashboard que incorpora:
 
 
 
-\- Indicadores estadísticos.
+- Indicadores estadísticos.
 
-\- Gráficos interactivos.
+- Gráficos interactivos.
 
-\- Mapas temáticos mediante Leaflet.
+- Mapas temáticos mediante Leaflet.
 
-\- Exploración de información territorial.
+- Exploración de información territorial.
 
-\- Tablas de consulta.
+- Tablas de consulta.
 
 
 #### Panel de indicadores
@@ -229,7 +229,7 @@ La documentación detallada de las fuentes, procedimientos
 y limitaciones metodológicas se encuentra en el reporte técnico.
 
 
-\## Reproducibilidad
+## Reproducibilidad
 
 
 
@@ -241,11 +241,11 @@ Para regenerar los documentos es necesario contar con R, los paquetes correspond
 
 
 
-\## Autor
+## Autor
 
 
 
-\*\*Marcelo Haberkorn\*\*
+**Marcelo Haberkorn**
 
 
 
@@ -253,5 +253,5 @@ Cartografía, Sistemas de Información Geográfica, teledetección y análisis d
 
 
 
-\[Perfil de GitHub](https://github.com/marcelohaberkorn)
+[Perfil de GitHub](https://github.com/marcelohaberkorn)
 
