@@ -12,6 +12,22 @@
 
 **Área de estudio:** San Carlos de Bariloche, Río Negro, Argentina.
 
+## Explorar el proyecto
+
+Los resultados del análisis pueden consultarse mediante dos productos complementarios:
+
+### 🌐 Tablero interactivo
+
+[**Abrir tablero de NBI de Bariloche**](https://marcelohaberkorn.github.io/bariloche-nbi-r/)
+
+Visualización interactiva de indicadores sociodemográficos, análisis estadístico, superposición geométrica y cartografía temática.
+
+### 📄 Reporte técnico
+
+[**Consultar reporte técnico completo**](https://marcelohaberkorn.github.io/bariloche-nbi-r/reporte.html)
+
+Documento técnico que presenta los objetivos, las fuentes de información, los procedimientos metodológicos, el análisis espacial y los resultados cartográficos.
+
 
 
 ## Descripción
