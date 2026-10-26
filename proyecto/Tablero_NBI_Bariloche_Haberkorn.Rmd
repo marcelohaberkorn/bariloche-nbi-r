@@ -81,81 +81,16 @@ output:
 }
 
 #indicadores .dashboard-column:nth-of-type(1) .gauge svg {
-  width: 96% !important;
-  height: 96% !important;
-  max-width: none !important;
-  max-height: none !important;
+  width: auto !important;
+  height: 260px !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  display: block !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 </style>
 
-<script>
-/*
-  JustGage deja espacio interno vacío dentro del SVG.
-  Este ajuste recalcula el viewBox alrededor del contenido real
-  (arco, valor y etiquetas), de modo que el semicírculo aproveche
-  mucho mejor el recuadro asignado sin deformar su proporción.
-*/
-(function() {
-  function fitGaugeToContent(gauge) {
-    var svg = gauge.querySelector("svg");
-    if (!svg) return;
-
-    var elements = svg.querySelectorAll("path, text");
-    if (!elements.length) return;
-
-    var minX = Infinity, minY = Infinity;
-    var maxX = -Infinity, maxY = -Infinity;
-
-    elements.forEach(function(el) {
-      try {
-        var b = el.getBBox();
-        if (!isFinite(b.x) || !isFinite(b.y) ||
-            !isFinite(b.width) || !isFinite(b.height)) return;
-
-        minX = Math.min(minX, b.x);
-        minY = Math.min(minY, b.y);
-        maxX = Math.max(maxX, b.x + b.width);
-        maxY = Math.max(maxY, b.y + b.height);
-      } catch (e) {}
-    });
-
-    if (!isFinite(minX) || !isFinite(minY) ||
-        !isFinite(maxX) || !isFinite(maxY)) return;
-
-    var width = maxX - minX;
-    var height = maxY - minY;
-
-    /* pequeño margen para no cortar extremos, números ni etiquetas */
-    var padX = width * 0.055;
-    var padY = height * 0.10;
-
-    svg.setAttribute(
-      "viewBox",
-      (minX - padX) + " " +
-      (minY - padY) + " " +
-      (width + 2 * padX) + " " +
-      (height + 2 * padY)
-    );
-
-    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-  }
-
-  function fitAllGauges() {
-    document
-      .querySelectorAll("#indicadores .dashboard-column:nth-of-type(1) .gauge")
-      .forEach(fitGaugeToContent);
-  }
-
-  window.addEventListener("load", function() {
-    setTimeout(fitAllGauges, 700);
-    setTimeout(fitAllGauges, 1500);
-  });
-
-  window.addEventListener("resize", function() {
-    setTimeout(fitAllGauges, 150);
-  });
-})();
-</script>
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
