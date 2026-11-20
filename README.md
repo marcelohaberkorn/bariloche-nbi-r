@@ -265,6 +265,8 @@ Para regenerar los documentos es necesario contar con R, los paquetes correspond
 
 
 
+Técnico Universitario en Cartografía, Teledetección y Sistemas de Información Geográfica — Universidad Nacional del Sur (UNS).
+
 Cartografía, Sistemas de Información Geográfica, teledetección y análisis de datos geoespaciales.
 
 
